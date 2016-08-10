@@ -33,8 +33,29 @@ This file is part of the QGROUNDCONTROL project
 #define ARDUPILOTMEGAMAV_H
 
 #include "UAS.h"
+#include "APMFirmwareVersion.h"
 #include <QString>
 #include <QSqlDatabase>
+
+static const QRegExp APM_COPTER_REXP("^(ArduCopter|APM:Copter)");
+static const QRegExp APM_SOLO_REXP("^(APM:Copter solo-)");
+static const QRegExp APM_PLANE_REXP("^(ArduPlane|APM:Plane)");
+static const QRegExp APM_ROVER_REXP("^(ArduRover|APM:Rover)");
+static const QRegExp APM_SUB_REXP("^(ArduSub|APM:Sub)");
+static const QRegExp APM_PX4NUTTX_REXP("^PX4: .*NuttX: .*");
+static const QRegExp APM_FRAME_REXP("^Frame: ");
+static const QRegExp APM_SYSID_REXP("^PX4v2 ");
+
+// Regex to parse version text coming from APM, gives out firmware type, major, minor and patch level numbers
+static const QRegExp VERSION_REXP("^(APM:Copter|APM:Plane|APM:Rover|APM:Sub|ArduCopter|ArduPlane|ArduRover|ArduSub) +[vV](\\d*)\\.*(\\d*)*\\.*(\\d*)*");
+
+// minimum firmware versions that don't suffer from mavlink severity inversion bug.
+// https://github.com/diydrones/apm_planner/issues/788
+static const QString MIN_SOLO_VERSION_WITH_CORRECT_SEVERITY_MSGS("APM:Copter solo-1.2.0");
+static const QString MIN_COPTER_VERSION_WITH_CORRECT_SEVERITY_MSGS("APM:Copter V3.4.0");
+static const QString MIN_PLANE_VERSION_WITH_CORRECT_SEVERITY_MSGS("APM:Plane V3.4.0");
+static const QString MIN_SUB_VERSION_WITH_CORRECT_SEVERITY_MSGS("APM:Sub V3.4.0");
+static const QString MIN_ROVER_VERSION_WITH_CORRECT_SEVERITY_MSGS("APM:Rover V2.6.0");
 
 class ArduPilotMegaMAV : public UAS
 {
@@ -53,6 +74,10 @@ public:
 
     void loadSettings();
     void saveSettings();
+
+    void adjustSeverity(mavlink_message_t* message) const;
+
+    bool useSeverityCompatibilityMode() {return m_severityCompatibilityMode;}
 
 signals:
     void versionDetected(QString versionString);
@@ -76,10 +101,13 @@ private slots:
 
 private:
     void createNewMAVLinkLog(uint8_t type);
+    static bool _isTextSeverityAdjustmentNeeded(const APMFirmwareVersion& firmwareVersion);
+
 
 private:
     QTimer *txReqTimer;
     bool m_severityCompatibilityMode;
+    APMFirmwareVersion m_firmwareVersion;
 };
 
 
@@ -248,9 +276,10 @@ public:
      * @param index - Index of this message
      * @param timeStamp - Time stamp of this message should be in seconds
      * @param mode - Mode of this message
-     * @param modeNum - Mode Num of this message (not used)
+     * @param modeNum - Mode Num of this message
+     * @param reason - Reason ID leading to this mode change (since AC 3.4)
      */
-    ModeMessage(const quint32 index, const double timeStamp, const quint32 mode, const quint32 modeNum);
+    ModeMessage(const quint32 index, const double timeStamp, const quint32 mode, const quint32 modeNum, const quint32 reason);
 
     /**
      * @brief Getter for the Mode of this message
@@ -265,6 +294,12 @@ public:
     quint32 getModeNum() const;
 
     /**
+     * @brief Getter for the mode change reason (since AC 3.4)
+     * @return mode change reason ID
+     */
+    quint32 getReason() const;
+
+    /**
      * @brief Reads an QSqlRecord and sets the internal data.
      *        The record must contain an Index in colum 0 and the
      *        colums m_TimeFieldName, "Mode" and "ModeNum" in order
@@ -272,9 +307,9 @@ public:
      *        scale the time stamp to seconds.
      *
      * @param record[in] - Filled QSqlRecord
-     * * @param timeDivider[in] - Devider to scale the timestamp to seconds
-     * @return true - all Fields could be read
-     *         false - not all data could be read
+     * @param timeDivider[in] - Divider to scale the timestamp to seconds
+     * @return true - all mandatory Fields could be read
+     *         false - not all mandatory data could be read
      */
     virtual bool setFromSqlRecord(const QSqlRecord &record, const double timeDivider);
 
@@ -287,8 +322,9 @@ public:
 
 private:
 
-    quint32 m_Mode;        /// Subsystem signaling the error
-    quint32 m_ModeNum;    /// Errorcode of the Subsystem
+    quint32 m_Mode;        /// Mode ID
+    quint32 m_ModeNum;     /// ModeNum ID (unused)
+    quint32 m_Reason;      /// Mode change ID
 };
 
 /**
@@ -448,6 +484,7 @@ enum Mode
     AUTOTUNE    = 15,
     POS_HOLD    = 16,
     BRAKE       = 17,
+    THROW       = 18,
     LAST_MODE           // This must always be the last entry
 };
 
@@ -501,6 +538,8 @@ enum Mode
     QSTABILIZE    = 17,
     QHOVER        = 18,
     QLOITER       = 19,
+    QLAND         = 20,
+    QRTL          = 21,
     LAST_MODE           // This must always be the last entry
 };
 

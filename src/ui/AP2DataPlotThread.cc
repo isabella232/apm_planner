@@ -40,8 +40,10 @@ This file is part of the APM_PLANNER project
 #include <QByteArray>
 #include <QDataStream>
 #include "MAVLinkDecoder.h"
-#include "QsLog.h"
+#include "logging.h"
 #include "QGC.h"
+
+#include <QTextBlock>
 
 
 AP2DataPlotThread::AP2DataPlotThread(AP2DataPlot2DModel *model,QObject *parent) :
@@ -52,6 +54,9 @@ AP2DataPlotThread::AP2DataPlotThread(AP2DataPlot2DModel *model,QObject *parent) 
     QLOG_DEBUG() << "Created AP2DataPlotThread:" << this;
     qRegisterMetaType<MAV_TYPE>("MAV_TYPE");
     qRegisterMetaType<AP2DataPlotStatus>("AP2DataPlotStatus");
+    qRegisterMetaType<QTextBlock>("QTextBlock");
+    qRegisterMetaType<QTextCursor>("QTextCursor");
+
 
     // flash logs and exported logs can have different timestamps
     m_possibleTimestamps.push_back(timeStampType("TimeUS", 1000000.0));
@@ -437,7 +442,8 @@ void AP2DataPlotThread::loadBinaryLog(QFile &logfile)
                                     }
                                 }
                                 //...and then use it to check the values.
-                                if (valuepairlist[nameIndex].second == "RATE_RLL_P" || valuepairlist[nameIndex].second == "H_SWASH_PLATE")
+                                if (valuepairlist[nameIndex].second == "RATE_RLL_P" || valuepairlist[nameIndex].second == "H_SWASH_PLATE"
+                                        || valuepairlist[nameIndex].second == "ATC_RAT_RLL_P" ) // ATC_RAT_RLL_P Used in AC3.4+
                                 {
                                     m_loadedLogType = MAV_TYPE_QUADROTOR;
                                 }
@@ -502,7 +508,9 @@ void AP2DataPlotThread::loadAsciiLog(QFile &logfile)
         emit lineRead(line);
         if (m_loadedLogType == MAV_TYPE_GENERIC)
         {
-            if ((line.contains(APM_COPTER_REXP) || (line.contains("PARM") && (line.contains("RATE_RLL_P") || line.contains("H_SWASH_PLATE")))))
+            if ((line.contains(APM_COPTER_REXP) || (line.contains("PARM")
+                                                    && (line.contains("RATE_RLL_P") || line.contains("H_SWASH_PLATE")
+                                                        || line.contains("ATC_RAT_RLL_P") ) ))) // ATC_RAT_RLL_P Used in AC3.4+
             {
                 m_loadedLogType = MAV_TYPE_QUADROTOR;
             }
@@ -1110,6 +1118,11 @@ void AP2DataPlotThread::run()
         QLOG_INFO() << "Plot Log loading took" << (QDateTime::currentMSecsSinceEpoch() - msecs) / 1000.0 << "seconds -" << logfile.pos() << "of" << logfile.size() << "bytes used";
         emit done(m_plotState, m_loadedLogType);
     }
+    // this is part of a workaround wich is needed to prevent this thread from terminating
+    // until it is allowToTerminate is called. The sleep shall make sure that allowToTerminate
+    // can finish before this thread terminates
+    m_workAroundSemaphore.acquire(1);
+    usleep(10);
 }
 
 void AP2DataPlotThread::addTimeToDescriptor(typeDescriptor &desc)

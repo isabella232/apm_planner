@@ -27,7 +27,7 @@ This file is part of the APM_PLANNER project
  */
 
 
-#include "QsLog.h"
+#include "logging.h"
 #include "AP2DataPlot2D.h"
 #include "LogDownloadDialog.h"
 #include <QFileDialog>
@@ -43,7 +43,6 @@ This file is part of the APM_PLANNER project
 #include <QSqlQuery>
 #include <QSqlRecord>
 #include <QSqlError>
-#include <QsLog.h>
 #include <QStandardItemModel>
 #include "MainWindow.h"
 #include "AP2DataPlot2DModel.h"
@@ -53,6 +52,8 @@ This file is part of the APM_PLANNER project
 #define ROW_HEIGHT_PADDING 3 //Number of additional pixels over font height for each row for the table/excel view.
 
 AP2DataPlot2D::AP2DataPlot2D(QWidget *parent,bool isIndependant) : QWidget(parent),
+    m_tableModel(NULL),
+    m_tableFilterProxyModel(NULL),
     m_updateTimer(NULL),
     m_showOnlyActive(false),
     m_graphCount(0),
@@ -157,7 +158,7 @@ AP2DataPlot2D::AP2DataPlot2D(QWidget *parent,bool isIndependant) : QWidget(paren
     connect(ui.loadOfflineLogButton,SIGNAL(clicked()),this,SLOT(loadButtonClicked()));
     connect(ui.autoScrollCheckBox,SIGNAL(clicked(bool)),this,SLOT(autoScrollClicked(bool)));
     connect(ui.hideExcelView,SIGNAL(clicked(bool)),this,SLOT(setExcelViewHidden(bool)));
-    connect(ui.tableWidget,SIGNAL(currentCellChanged(int,int,int,int)),this,SLOT(tableCellChanged(int,int,int,int)));
+    //connect(ui.tableWidget,SIGNAL(currentCellChanged(int,int,int,int)),this,SLOT(tableCellChanged(int,int,int,int)));
 
     connect(ui.graphControlsPushButton,SIGNAL(clicked()),this,SLOT(graphControlsButtonClicked()));
     connect(ui.toKMLPushButton, SIGNAL(clicked()), this, SLOT(logToKmlClicked()));
@@ -1000,6 +1001,7 @@ void AP2DataPlot2D::threadTerminated()
 
 AP2DataPlot2D::~AP2DataPlot2D()
 {
+    QLOG_DEBUG() << "AP2DataPlot2D::~AP2DataPlot2D()";
     saveSettings();
     if (m_updateTimer)
     {
@@ -1009,6 +1011,7 @@ AP2DataPlot2D::~AP2DataPlot2D()
     }
     if (m_logLoaderThread)
     {
+        m_logLoaderThread->allowToTerminate();  // without this call the loader cannot terminate
         m_logLoaderThread->stopLoad();
         m_logLoaderThread->deleteLater();
         m_logLoaderThread = NULL;
@@ -1027,6 +1030,12 @@ AP2DataPlot2D::~AP2DataPlot2D()
 
     delete m_plot;
     m_plot = NULL;
+
+    delete m_tableModel;
+    m_tableModel = NULL;
+
+    delete m_tableFilterProxyModel;
+    m_tableFilterProxyModel = NULL;
 }
 
 void AP2DataPlot2D::itemEnabled(QString name)
@@ -1078,7 +1087,14 @@ void AP2DataPlot2D::itemEnabled(QString name)
         {
             connect(m_wideAxisRect->axis(QCPAxis::atLeft,0),SIGNAL(rangeChanged(QCPRange)),yAxis,SLOT(setRange(QCPRange)));
         }
-        QColor color = QColor::fromRgb(rand()%255,rand()%255,rand()%255);
+        // use golden ratio for evenly distributed colors
+        double golden_ratio_conjugate = 0.618033988749895;
+        double h = ((double)rand() / (double)(RAND_MAX));
+        h = h + golden_ratio_conjugate;
+        h = fmod(h, 1);     // hue
+        double s = 0.75;    // saturation
+        double v = 0.8516;  // value
+        QColor color = QColor::fromHsvF(h, s, v);
         yAxis->setLabelColor(color);
         yAxis->setTickLabelColor(color); // add an extra axis on the left and color its numbers
         QCPGraph *mainGraph1 = m_plot->addGraph(m_wideAxisRect->axis(QCPAxis::atBottom), m_wideAxisRect->axis(QCPAxis::atLeft,m_graphCount++));
@@ -1251,6 +1267,7 @@ void AP2DataPlot2D::itemDisabled(QString name)
 void AP2DataPlot2D::progressDialogCanceled()
 {
     m_logLoaderThread->stopLoad();
+    m_logLoaderThread->allowToTerminate();  // without this call the loader cannot terminate
 }
 
 void AP2DataPlot2D::clearGraph()
@@ -1292,18 +1309,19 @@ void AP2DataPlot2D::clearGraph()
 
 void AP2DataPlot2D::loadStarted()
 {
-    m_progressDialog = QSharedPointer<QProgressDialog>(new QProgressDialog("Loading File","Cancel",0,100,this));
+    m_progressDialog = QSharedPointer<QProgressDialog>(new QProgressDialog("Loading File","Cancel",0,100,this), &QObject::deleteLater);
     m_progressDialog->setWindowModality(Qt::WindowModal);
     connect(m_progressDialog.data(),SIGNAL(canceled()),this,SLOT(progressDialogCanceled()));
     m_progressDialog->show();
     QApplication::processEvents();
-    //ui.tableWidget->clear();
-    //ui.tableWidget->setRowCount(0);
 }
 
 void AP2DataPlot2D::loadProgress(qint64 pos,qint64 size)
 {
-    m_progressDialog->setValue(((double)pos / (double)size) * 100.0);
+    if (m_progressDialog)
+    {
+        m_progressDialog->setValue(((double)pos / (double)size) * 100.0);
+    }
 }
 
 int AP2DataPlot2D::getStatusTextPos()
@@ -1475,7 +1493,8 @@ void AP2DataPlot2D::threadDone(AP2DataPlotStatus state, MAV_TYPE type)
     connect(ui.tableWidget->selectionModel(),SIGNAL(currentChanged(QModelIndex,QModelIndex)),this,SLOT(selectedRowChanged(QModelIndex,QModelIndex)));
 
     m_progressDialog->hide();
-    m_progressDialog.reset();
+    m_progressDialog.clear();
+
     setExcelViewHidden(false);
     ui.hideExcelView->setVisible(true);
     ui.sortShowPushButton->setVisible(true);
@@ -1494,17 +1513,14 @@ void AP2DataPlot2D::threadDone(AP2DataPlotStatus state, MAV_TYPE type)
     // Enable double clicking of graph
     connect(m_plot,SIGNAL(mouseDoubleClick(QMouseEvent*)),this,SLOT(plotDoubleClick(QMouseEvent*)));
 
+    QLOG_DEBUG() << "Calling allowToTerminate()";
+    m_logLoaderThread->allowToTerminate(); // without this call the loader cannot terminate
 }
 
 
 void AP2DataPlot2D::threadError(QString errorstr)
 {
     QMessageBox::information(0,"Error",errorstr);
-    if (m_progressDialog)
-    {
-        m_progressDialog->hide();
-        m_progressDialog.reset();
-    }
     ui.dataSelectionScreen->clear();
     m_dataList.clear();
     this->close();

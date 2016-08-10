@@ -29,10 +29,9 @@ This file is part of the QGROUNDCONTROL project
  */
 
 #include "ArduPilotMegaMAV.h"
-#include "QsLog.h"
+#include "logging.h"
 #include "GAudioOutput.h"
 #include "LinkManager.h"
-
 
 #ifndef MAVLINK_MSG_ID_MOUNT_CONFIGURE
 #include "ardupilotmega/mavlink_msg_mount_configure.h"
@@ -79,7 +78,7 @@ void ArduPilotMegaMAV::loadSettings()
 {
     QSettings settings;
     settings.beginGroup("ARDUPILOT");
-    m_severityCompatibilityMode = settings.value("STATUSTEXT_COMPAT_MODE",false).toBool();
+//    m_severityCompatibilityMode = settings.value("STATUSTEXT_COMPAT_MODE",false).toBool();
     settings.endGroup();
 }
 
@@ -87,7 +86,7 @@ void ArduPilotMegaMAV::saveSettings()
 {
     QSettings settings;
     settings.beginGroup("ARDUPILOT");
-    settings.setValue("STATUSTEXT_COMPAT_MODE",m_severityCompatibilityMode);
+//    settings.setValue("STATUSTEXT_COMPAT_MODE",m_severityCompatibilityMode);
     settings.endGroup();
     settings.sync();
 }
@@ -201,46 +200,26 @@ void ArduPilotMegaMAV::receiveMessage(LinkInterface* link, mavlink_message_t mes
             mavlink_msg_statustext_get_text(&message, b.data());
             // Ensure NUL-termination
             b[b.length()-1] = '\0';
-            QString text = QString(b);
+            QString messageText = QString(b);
             int severity = mavlink_msg_statustext_get_severity(&message);
-            QLOG_INFO() << "STATUS TEXT:" << severity << ":" << text;
+            QLOG_INFO() << "STATUS TEXT:" << severity << ":" << messageText;
 
-            if (text.contains(APM_COPTER_REXP) || text.contains(APM_PLANE_REXP)
-                    || text.contains(APM_ROVER_REXP)) {
-                QLOG_DEBUG() << "APM Version String detected:" << text;
-                // Process Version and keep.
+            if (!messageText.contains(APM_SOLO_REXP)) {
+                if (messageText.contains(APM_COPTER_REXP) || messageText.contains(APM_PLANE_REXP)
+                        || messageText.contains(APM_ROVER_REXP)) {
+                    QLOG_DEBUG() << "APM Version String detected:" << messageText;
+                    m_firmwareVersion.parseVersion(messageText);
+                    // Process Version and keep.
+                    m_severityCompatibilityMode = _isTextSeverityAdjustmentNeeded(m_firmwareVersion);
 
-                emit versionDetected(text);
+                    emit versionDetected(messageText);
+                }
             }
 
             // Check is older APM and reset severity to correct MAVLINK spec.
             if (m_severityCompatibilityMode) {
-                // Older APM detected, translate severity to MAVLink Standard severity
-                // SEVERITY_LOW     =1 MAV_SEVERITY_WARNING = 4
-                // SEVERITY_MEDIUM  =2 MAV_SEVERITY_ALERT   = 1
-                // SEVERITY_HIGH    =3 MAV_SEVERITY_CRITICAL= 2
-                // SEVERITY_USER_RESPONSE =5 MAV_SEVERITY_CRITICAL= 2
-                switch (severity) {
-                    case 1: /*gcs_severity::SEVERITY_LOW:*/
-                        severity = MAV_SEVERITY_WARNING;
-                        break;
-                    case 2: /*gcs_severity::SEVERITY_MEDIUM*/
-                        severity = MAV_SEVERITY_ALERT;
-                        break;
-                    case 3: /*gcs_severity::SEVERITY_HIGH:*/
-                        severity = MAV_SEVERITY_CRITICAL;
-                        break;
-                    case 5: /*gcs_severity::SEVERITY_USER_RESPONSE:*/
-                        severity = MAV_SEVERITY_CRITICAL;
-                        break;
-                    default:
-                        severity = MAV_SEVERITY_INFO;
-                        break;
-                }
-                // repack message for further down the stack.s
-                mavlink_msg_statustext_pack(message.sysid,message.compid,&message,severity,b.data());
-
-             }
+                adjustSeverity(&message);
+            }
 
         } break;
         default:
@@ -252,6 +231,67 @@ void ArduPilotMegaMAV::receiveMessage(LinkInterface* link, mavlink_message_t mes
     // default Bea
     UAS::receiveMessage(link, message);
 }
+
+void ArduPilotMegaMAV::adjustSeverity(mavlink_message_t* message) const
+{
+    // lets make QGC happy with right severity values
+    mavlink_statustext_t statusText;
+    mavlink_msg_statustext_decode(message, &statusText);
+
+    // Older APM detected, translate severity to MAVLink Standard severity
+    // SEVERITY_LOW     =1 MAV_SEVERITY_WARNING = 4
+    // SEVERITY_MEDIUM  =2 MAV_SEVERITY_ALERT   = 1
+    // SEVERITY_HIGH    =3 MAV_SEVERITY_CRITICAL= 2
+    // SEVERITY_USER_RESPONSE =5 MAV_SEVERITY_CRITICAL= 2
+
+    switch(statusText.severity) {
+    case 1:     /* gcs_severity::SEVERITY_LOW according to old codes */
+        statusText.severity = MAV_SEVERITY_WARNING;
+        break;
+    case 2:     /* gcs_severity::SEVERITY_MEDIUM according to old codes  */
+        statusText.severity = MAV_SEVERITY_ALERT;
+        break;
+    case 3:     /* gcs_severity::SEVERITY_HIGH  according to old codes */
+        statusText.severity = MAV_SEVERITY_CRITICAL;
+        break;
+    case 5: /*gcs_severity::SEVERITY_USER_RESPONSE according to old codes*/
+        statusText.severity = MAV_SEVERITY_CRITICAL;
+        break;
+    default:
+        statusText.severity = MAV_SEVERITY_INFO;
+    }
+
+    mavlink_msg_statustext_encode(message->sysid, message->compid, message, &statusText);
+}
+
+bool ArduPilotMegaMAV::_isTextSeverityAdjustmentNeeded(const APMFirmwareVersion& firmwareVersion)
+{
+    if (!firmwareVersion.isValid()) {
+        return false;
+    }
+
+    bool adjustmentNeeded = false;
+    if (firmwareVersion.vehicleType().contains(APM_COPTER_REXP)) {
+        if (firmwareVersion < APMFirmwareVersion(MIN_COPTER_VERSION_WITH_CORRECT_SEVERITY_MSGS)) {
+            adjustmentNeeded = true;
+        }
+    } else if (firmwareVersion.vehicleType().contains(APM_PLANE_REXP)) {
+        if (firmwareVersion < APMFirmwareVersion(MIN_PLANE_VERSION_WITH_CORRECT_SEVERITY_MSGS)) {
+            adjustmentNeeded = true;
+        }
+    } else if (firmwareVersion.vehicleType().contains(APM_ROVER_REXP)) {
+        if (firmwareVersion < APMFirmwareVersion(MIN_ROVER_VERSION_WITH_CORRECT_SEVERITY_MSGS)) {
+            adjustmentNeeded = true;
+        }
+    } else if (firmwareVersion.vehicleType().contains(APM_SUB_REXP)) {
+        if (firmwareVersion < APMFirmwareVersion(MIN_SUB_VERSION_WITH_CORRECT_SEVERITY_MSGS)) {
+            adjustmentNeeded = true;
+        }
+    }
+
+    return adjustmentNeeded;
+}
+
 void ArduPilotMegaMAV::setMountConfigure(unsigned char mode, bool stabilize_roll,bool stabilize_pitch,bool stabilize_yaw)
 {
     //Only supported by APM
@@ -322,7 +362,7 @@ QString ArduPilotMegaMAV::getCustomModeText()
 {
     QLOG_DEBUG() << "APM: getCustomModeText()";
     QString customModeString;
-    ModeMessage mode(0, 0, custom_mode, 0);
+    ModeMessage mode(0, 0, custom_mode, 0, 0);
 
     if (isFixedWing()){
         customModeString = Plane::MessageFormatter::format(mode);
@@ -509,14 +549,14 @@ QString ErrorMessage::toString() const
 
 const QString ModeMessage::TypeName("MODE");
 
-ModeMessage::ModeMessage() : m_Mode(0), m_ModeNum(0)
+ModeMessage::ModeMessage() : m_Mode(0), m_ModeNum(0), m_Reason(0)
 {
     // Set up base class vars for this message
     m_TypeName = TypeName;
     m_Color    = QColor(50,125,0);
 }
 
-ModeMessage::ModeMessage(const QString &TimeFieldName) : m_Mode(0), m_ModeNum(0)
+ModeMessage::ModeMessage(const QString &TimeFieldName) : m_Mode(0), m_ModeNum(0), m_Reason(0)
 {
     // Set up base class vars for this message
     m_TypeName = TypeName;
@@ -524,10 +564,11 @@ ModeMessage::ModeMessage(const QString &TimeFieldName) : m_Mode(0), m_ModeNum(0)
     m_TimeFieldName = TimeFieldName;
 }
 
-ModeMessage::ModeMessage(const quint32 index, const double timeStamp, const quint32 mode, const quint32 modeNum) :
+ModeMessage::ModeMessage(const quint32 index, const double timeStamp, const quint32 mode, const quint32 modeNum, const quint32 reason) :
     MessageBase(index, timeStamp, TypeName, QColor(50,125,0)),
     m_Mode(mode),
-    m_ModeNum(modeNum)
+    m_ModeNum(modeNum),
+    m_Reason(reason)
 {}
 
 quint32 ModeMessage::getMode() const
@@ -538,6 +579,11 @@ quint32 ModeMessage::getMode() const
 quint32 ModeMessage::getModeNum() const
 {
     return m_ModeNum;
+}
+
+quint32 ModeMessage::getReason() const
+{
+    return m_Reason;
 }
 
 bool ModeMessage::setFromSqlRecord(const QSqlRecord &record, const double timeDivider)
@@ -567,6 +613,11 @@ bool ModeMessage::setFromSqlRecord(const QSqlRecord &record, const double timeDi
         m_ModeNum = static_cast<quint32>(record.value("ModeNum").toUInt());
        // ModeNum does not influence the returncode as its optional
     }
+    if (record.contains("Rsn"))
+    {
+        m_Reason = static_cast<quint32>(record.value("Rsn").toUInt());
+       // Reason does not influence the returncode as its optional. Came with AC 3.4
+    }
 
     return rc1 && rc2 && rc3;
 }
@@ -576,7 +627,7 @@ QString ModeMessage::toString() const
     QString output;
     QTextStream outputStream(&output);
 
-    outputStream << " Mode:" << m_Mode << " ModeNum:" << m_ModeNum;
+    outputStream << " Mode:" << m_Mode << " ModeNum:" << m_ModeNum << " Reason:" << m_Reason;
     return output;
 }
 
@@ -759,7 +810,7 @@ QString Copter::MessageFormatter::format(const ErrorMessage &message)
 {
     // SubSys ans ErrorCode interpretation was taken from
     // Ardupilot/ArduCopter/defines.h
-    // last verification 24.01.2016
+    // last verification 09.06.2016
 
     QString output;
     QTextStream outputStream(&output);
@@ -841,7 +892,7 @@ QString Copter::MessageFormatter::format(const ErrorMessage &message)
 
     case 10:
     {
-        ModeMessage tmpMsg(0, 0, message.getErrorCode(), 0);
+        ModeMessage tmpMsg(0, 0, message.getErrorCode(), 0, 0);
         outputStream << "Flight-Mode "  << Copter::MessageFormatter::format(tmpMsg) <<" refused.";
         EcodeUsed = true;
         break;
@@ -923,6 +974,58 @@ QString Copter::MessageFormatter::format(const ErrorMessage &message)
         outputStream << "CPU:";
         break;
 
+    case 20:
+        outputStream << "FS-ADSB:";
+        if (message.getErrorCode() == 1)
+        {
+            outputStream << "Detected";
+            EcodeUsed = true;
+        }
+        break;
+
+    case 21:
+        outputStream << "Terrain:";
+        if (message.getErrorCode() == 2)
+        {
+            outputStream << "Missing Terrain Data";
+            EcodeUsed = true;
+        }
+        break;
+
+    case 22:
+        outputStream << "Navigation:";
+        if (message.getErrorCode() == 2)
+        {
+            outputStream << "Failed to set destination";
+            EcodeUsed = true;
+        }
+        else if (message.getErrorCode() == 3)
+        {
+            outputStream << "Restarted RTL";
+            EcodeUsed = true;
+        }
+        else if (message.getErrorCode() == 4)
+        {
+            outputStream << "Failed Circle init";
+            EcodeUsed = true;
+        }
+        else if (message.getErrorCode() == 5)
+        {
+            outputStream << "Destination outside fence";
+            EcodeUsed = true;
+        }
+        break;
+
+    case 23:
+        outputStream << "FS-Terrain:";
+        if (message.getErrorCode() == 1)
+        {
+            outputStream << "Detected";
+            EcodeUsed = true;
+        }
+        break;
+
+
     default:
         outputStream << "SubSys:" << message.getErrorCode() << " ECode:" << message.getErrorCode();
         EcodeUsed = true;
@@ -959,7 +1062,7 @@ QString Copter::MessageFormatter::format(const ModeMessage &message)
 {
     // Interpretation taken from
     // Ardupilot/ArduCopter/defines.h
-    // last verification 24.01.2016
+    // last verification 09.06.2016
 
     QString output;
     QTextStream outputStream(&output);
@@ -1011,10 +1114,66 @@ QString Copter::MessageFormatter::format(const ModeMessage &message)
     case Copter::BRAKE:
         outputStream << "Brake";
         break;
+    case Copter::THROW:
+        outputStream << "Throw";
+        break;
     default:
         outputStream << "Unknown Mode:" << message.getMode();
         break;
     }
+
+    // only if we have a valid reason
+    if (message.getReason() != 0)
+    {
+        outputStream << endl << "by " ;
+
+        switch (message.getReason())
+        {
+        case 1:
+            outputStream << "radio";
+            break;
+        case 2:
+            outputStream << "GCS cmd";
+            break;
+        case 3:
+            outputStream << "radio FS";
+            break;
+        case 4:
+            outputStream << "battery FS";
+            break;
+        case 5:
+            outputStream << "GCS FS";
+            break;
+        case 6:
+            outputStream << "EKF FS";
+            break;
+        case 7:
+            outputStream << "GPS Glitch";
+            break;
+        case 8:
+            outputStream << "mission end";
+            break;
+        case 9:
+            outputStream << "throttle land escape";
+            break;
+        case 10:
+            outputStream << "fence breach";
+            break;
+        case 11:
+            outputStream << "terrain FS";
+            break;
+        case 12:
+            outputStream << "brake timeout";
+            break;
+        case 13:
+            outputStream << "Flip complete";
+            break;
+        default:
+            outputStream << "unknown reason:" << message.getReason();
+            break;
+        }
+    }
+
     return output;
 }
 
@@ -1022,13 +1181,22 @@ QString Copter::MessageFormatter::format(const EventMessage &message)
 {
     // Interpretation taken from
     // Ardupilot/ArduCopter/defines.h
-    // last verification 24.01.2016
+    // last verification 09.06.2016
 
     QString output;
     QTextStream outputStream(&output);
 
     switch(message.getEventID())
     {
+    case 7:
+        outputStream << "AP-State";
+        break;
+    case 8:
+        outputStream << "System time set";
+        break;
+    case 9:
+        outputStream << "Init simple bearing";
+        break;
     case 10:
         outputStream << "Armed";
         break;
@@ -1099,7 +1267,7 @@ QString Copter::MessageFormatter::format(const EventMessage &message)
         outputStream << "Save Trim";
         break;
     case 39:
-        outputStream << "Add WP";
+        outputStream << "Save/Add WP";
         break;
     case 40:
         outputStream << "WP Clear Mission RTL";
@@ -1150,10 +1318,10 @@ QString Copter::MessageFormatter::format(const EventMessage &message)
         outputStream << "Motor emergency stop clear";
         break;
     case 56:
-        outputStream << "Motor interlock enable";
+        outputStream << "Motor interlock disabled";
         break;
     case 57:
-        outputStream << "Motor interlock disable";
+        outputStream << "Motor interlock enabled";
         break;
     case 58:
         outputStream << "Motor runup complete";         // heli only
@@ -1263,6 +1431,12 @@ QString Plane::MessageFormatter::format(const ModeMessage &message)
         break;
     case Plane::QLOITER:
         outputStream << "QLoiter";
+        break;
+    case Plane::QLAND:
+        outputStream << "QLand";
+        break;
+    case Plane::QRTL:
+        outputStream << "QRTL";
         break;
     default:
         outputStream << "Unknown Mode:" << message.getMode();

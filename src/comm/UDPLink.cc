@@ -36,7 +36,7 @@ This file is part of the QGROUNDCONTROL project
 #include <iostream>
 #include <QHostInfo>
 
-#include "QsLog.h"
+#include "logging.h"
 #include "UDPLink.h"
 #include "LinkManager.h"
 #include "QGC.h"
@@ -45,6 +45,7 @@ This file is part of the QGROUNDCONTROL project
 UDPLink::UDPLink(QHostAddress host, quint16 port) :
     socket(NULL),
     connectState(false),
+    _shouldRestartConnection(false),
     _running(false)
 {
     this->host = host;

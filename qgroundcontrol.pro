@@ -59,7 +59,7 @@ linux-g++-64 {
     DISTRO = $$system(lsb_release -i)
 
     contains( DISTRO, "Ubuntu" ) {
-        message(ArchLinux Build)
+        message(Ubuntu Build)
         DEFINES += Q_UBUNTU
     }
 
@@ -147,10 +147,7 @@ DEFINES += _TTY_NOWARN_
 
 #Turn on camera view
 #DEFINES += AMERAVIEW
-#
-# Logging Library
-#
-include (QsLog/QsLog.pri)
+
 #include (libs/mavlink/include/mavlink/v1.0-qt/mavlink.pri)
 #
 # OS Specific settings
@@ -375,6 +372,7 @@ FORMS += \
     src/ui/mission/QGCMissionDoSetCamTriggDist.ui \
     src/ui/mission/QGCMissionDoSetHome.ui \
     src/ui/mission/QGCMissionDoSetRelay.ui \
+    src/ui/mission/QGCMissionDoSetReverse.ui \
     src/ui/mission/QGCMissionDoSetROI.ui \
     src/ui/mission/QGCMissionDoMountControl.ui \
     src/ui/mission/QGCMissionDoRepeatRelay.ui \
@@ -554,6 +552,7 @@ HEADERS += \
     src/ui/mission/QGCMissionDoSetCamTriggDist.h \
     src/ui/mission/QGCMissionDoSetHome.h \
     src/ui/mission/QGCMissionDoSetRelay.h \
+    src/ui/mission/QGCMissionDoSetReverse.h \
     src/ui/mission/QGCMissionDoSetROI.h \
     src/ui/mission/QGCMissionDoMountControl.h \
     src/ui/mission/QGCMissionDoRepeatRelay.h \
@@ -674,7 +673,9 @@ HEADERS += \
     src/comm/LinkManagerFactory.h \
     src/ui/VibrationMonitor.h \
     src/ui/EKFMonitor.h \
-    src/Settings.h
+    src/Settings.h \
+    src/logging.h \
+    src/uas/APMFirmwareVersion.h
 
 SOURCES += src/main.cc \
     src/QGCCore.cc \
@@ -772,6 +773,7 @@ SOURCES += src/main.cc \
     src/ui/mission/QGCMissionDoSetCamTriggDist.cc \
     src/ui/mission/QGCMissionDoSetHome.cc \
     src/ui/mission/QGCMissionDoSetRelay.cc \
+    src/ui/mission/QGCMissionDoSetReverse.cc \
     src/ui/mission/QGCMissionDoSetROI.cc \
     src/ui/mission/QGCMissionDoMountControl.cc \
     src/ui/mission/QGCMissionDoRepeatRelay.cc \
@@ -891,7 +893,8 @@ SOURCES += src/main.cc \
     src/comm/LinkManagerFactory.cpp \
     src/ui/VibrationMonitor.cpp \
     src/ui/EKFMonitor.cpp \
-    src/Settings.cpp
+    src/Settings.cpp \
+    src/uas/APMFirmwareVersion.cpp
 
 MacBuild | WindowsBuild : contains(GOOGLEEARTH, enable) { #fix this to make sense ;)
     message(Including support for Google Earth)
